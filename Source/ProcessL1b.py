@@ -1,5 +1,6 @@
 ''' Process L1AQC to L1B '''
 import os
+import re
 import datetime as dt
 import calendar
 from inspect import currentframe, getframeinfo
@@ -16,6 +17,7 @@ from Source.ProcessL1b_FactoryCal import ProcessL1b_FactoryCal
 from Source.ProcessL1b_FRMCal import ProcessL1b_FRMCal
 from Source.GetAnc import GetAnc
 from Source.GetAnc_ecmwf import GetAnc_ecmwf
+from Source.SeaBASSHeader import SeaBASSHeader
 import Source.utils.loggingHCP as logging
 import Source.utils.dating as dating
 import Source.utils.comparing as comparing
@@ -35,19 +37,6 @@ class ProcessL1b:
         gp = root.addGroup("RAW_UNCERTAINTIES")
         gp.attributes['FrameType'] = 'NONE'  # add FrameType = None so grp passes a quality check later
 
-        # # Read uncertainty parameters from class-based calibration
-        # for f in glob.glob(os.path.join(inpath, r'*class_POLAR*')):
-        #     filing.read_char(f, gp)
-        # for f in glob.glob(os.path.join(inpath, r'*class_STRAY*')):
-        #     filing.read_char(f, gp)
-        # for f in glob.glob(os.path.join(inpath, r'*class_ANGULAR*')):
-        #     filing.read_char(f, gp)
-        # for f in glob.glob(os.path.join(inpath, r'*class_THERMAL*')):
-        #     filing.read_char(f, gp)
-        # for f in glob.glob(os.path.join(inpath, r'*class_LINEAR*')):
-        #     filing.read_char(f, gp)
-        # for f in glob.glob(os.path.join(inpath, r'*class_STAB*')):
-        #     filing.read_char(f, gp)
         # Read uncertainty parameters from class-based calibration
         for f in glob.glob(os.path.join(inpath, r'*class_POLAR*')):
             filing.read_char(f, gp)
@@ -195,10 +184,10 @@ class ProcessL1b:
         return root (with the group "RAW_UNCERTAINTIES" updated to contain the read cal/chars)
         '''
         if ConfigFile.settings['SensorType'].lower() == "trios es only" or ConfigFile.settings['SensorType'].lower() == "sorad":
-            sensor_type = 'TriOS'
+            sensor_make = 'TriOS'
         else:
-            sensor_type = ConfigFile.settings['SensorType']
-        fidRadPath= os.path.join(CODE_HOME, 'Data', 'FidRadDB', sensor_type)
+            sensor_make = ConfigFile.settings['SensorType']
+        fidRadPath= os.path.join(CODE_HOME, 'Data', 'FidRadDB', sensor_make)
 
         # Initialise "RAW_UNCERTAINTIES"
         gp = root.addGroup("RAW_UNCERTAINTIES")
@@ -216,6 +205,9 @@ class ProcessL1b:
         # Check which cal/char files are needed for each of the 3 sensor types (ES, LT, LI) in cal/char
         # regime = Full, i.e. ConfigFile.settings["fL1bCal"] == 3
         # ... then filter to RADCAL if cal'char regime = class, i.e. ConfigFile.settings["fL1bCal"] == 2
+        # First update the factory files
+        SeaBASSHeader.loadSeaBASSHeader(ConfigFile.settings['seaBASSHeaderFileName'])
+        SeaBASSHeader.refreshCalibrationFiles()
         for sensorType, needed_cal_chars_fullFRM in ConfigFile.settings['neededCalCharsFRM'].items():
             # Loop over each serialNumber_calCharType tag available in ConfigFile.settings['neededCalCharsFRM']
             for serialNumber_calCharType in needed_cal_chars_fullFRM:
@@ -264,27 +256,35 @@ class ProcessL1b:
 
                         filing.read_char(chosen_file, gp)
                         gp.attributes[f'{sensorType}_{calCharType}_file'] = os.path.split(chosen_file)[-1]
-                        if ConfigFile.settings["SensorType"].lower() == 'seabird':
+
+                        if sensor_make.lower() == 'seabird':
                             root.getGroup(f"{sensorType}_LIGHT_L1AQC").attributes['CalibrationDate'] = available_files_calTime0[idx]
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalibrationDate'] = available_files_calTime0[idx]
                         else:
                             root.getGroup(f"{sensorType}_L1AQC").attributes['CalibrationDate'] = available_files_calTime0[idx]
+                            root.getGroup(sensorType).attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(sensorType).attributes['CalibrationDate'] = available_files_calTime0[idx]
+
+                        # Update SeaBass Headers                        
+                        # Now add the FidRadDB files to the factory files
+                        if f',{os.path.split(chosen_file)[-1]}' not in SeaBASSHeader.settings["calibration_files"]:                            
+                                SeaBASSHeader.settings["calibration_files"] += f',{os.path.split(chosen_file)[-1]}'
 
                     elif ConfigFile.settings["MultiCal"] == 1:  # Pre-post cals
 
                         # Read preCal into gp
-                        preCal = os.path.join(CODE_HOME,fidRadPath,ConfigFile.settings.get("preCal_%s" % sensorType))
+                        preCal = os.path.join(CODE_HOME,fidRadPath,ConfigFile.settings.get(f'preCal_{sensorType}'))
                         if preCal is None:
                             raise ValueError('Pre-calibration file should have been chosen if pre-post option was chosen (see GUI-->Edit-->Cal/Char options).')
-                        filing.read_char(preCal, gp)
 
                         # Read postCal into gp
-                        postCal = os.path.join(CODE_HOME,fidRadPath,ConfigFile.settings.get("postCal_%s" % sensorType))
+                        postCal = os.path.join(CODE_HOME,fidRadPath,ConfigFile.settings.get(f'postCal_{sensorType}'))
                         if postCal is None:
                             raise ValueError('Post-calibration file should have been chosen if pre-post option was chosen (see GUI-->Edit-->Cal/Char options).')
-                        filing.read_char(postCal, gp)
 
                         # Set pre and post cal files as the only "available" files...
-                        available_files_prePost = preCal + postCal
+                        available_files_prePost = [preCal] + [postCal]
 
                         # Get calibration time
                         available_files_calTime0_prePost = [os.path.basename(f).split('_')[-1].split('.')[0] for f in available_files_prePost]
@@ -298,25 +298,49 @@ class ProcessL1b:
 
                         filing.read_char(chosen_file, gp)
                         gp.attributes[f'{sensorType}_{calCharType}_file'] = os.path.split(chosen_file)[-1]
-                        if ConfigFile.settings["SensorType"].lower() == 'seabird':
-                            root.getGroup(f"{sensorType}_LIGHT_L1AQC").attributes['CalibrationDate'] = available_files_calTime0_prePost[idx]
+
+                        if sensor_make.lower() == 'seabird':
+                            root.getGroup(f"{sensorType}_LIGHT_L1AQC").attributes['CalibrationDate'] = available_files_calTime0[idx]
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalibrationDate'] = available_files_calTime0[idx]
                         else:
-                            root.getGroup(f"{sensorType}_L1AQC").attributes['CalibrationDate'] = available_files_calTime0_prePost[idx]
+                            root.getGroup(f"{sensorType}_L1AQC").attributes['CalibrationDate'] = available_files_calTime0[idx]
+                            root.getGroup(sensorType).attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(sensorType).attributes['CalibrationDate'] = available_files_calTime0[idx]
+
+                        # Update SeaBass Headers
+                        if f',{os.path.split(chosen_file)[-1]}' not in SeaBASSHeader.settings["calibration_files"]:
+                            SeaBASSHeader.settings["calibration_files"] += f',{os.path.split(chosen_file)[-1]}'
 
                     elif ConfigFile.settings["MultiCal"] == 2: # Choose-cal
 
                         # Read specific chosen cal into gp
-                        chooseCal = os.path.join(CODE_HOME,fidRadPath,
-                                                 ConfigFile.settings.get(f'chooseCal_{sensorType}'))
-                        if chooseCal is None:
+                        chosen_file = os.path.join(CODE_HOME,fidRadPath, ConfigFile.settings.get(f'chooseCal_{sensorType}'))
+                        if chosen_file is None:
                             raise ValueError('Calibration file should have been chosen if "Chose cal." option was chosen (see GUI-->Edit-->Cal/Char options).')
-                        filing.read_char(chooseCal, gp)
-                        if ConfigFile.settings["SensorType"].lower() == 'seabird':
-                            root.getGroup(f"{sensorType}_LIGHT_L1AQC").attributes['CalibrationDate'] =\
-                                  os.path.basename(chooseCal).split('_')[-1].split('.')[0]
+                        filing.read_char(chosen_file, gp)
+
+                        calDate = os.path.basename(chosen_file).split('_')[-1].split('.')[0]
+
+                        if sensor_make.lower() == 'seabird':
+                            root.getGroup(f"{sensorType}_LIGHT_L1AQC").attributes['CalibrationDate'] = calDate
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(f'{sensorType}_LIGHT').attributes['CalibrationDate'] = calDate
                         else:
-                            root.getGroup(f"{sensorType}_L1AQC").attributes['CalibrationDate'] = \
-                                os.path.basename(chooseCal).split('_')[-1].split('.')[0]
+                            root.getGroup(f"{sensorType}_L1AQC").attributes['CalibrationDate'] = calDate
+                            root.getGroup(sensorType).attributes['CalFileName'] = os.path.split(chosen_file)[-1]
+                            root.getGroup(sensorType).attributes['CalibrationDate'] = calDate
+
+                        # Update SeaBass Headers
+                        if f',{os.path.split(chosen_file)[-1]}' not in SeaBASSHeader.settings["calibration_files"]:
+                            SeaBASSHeader.settings["calibration_files"] += f',{os.path.split(chosen_file)[-1]}'
+
+                        # # Update calibration file attributes in
+                        # gp = node.getGroup(sensor)
+                        # gp.attributes['CalFileName'] = uncGroup.attributes[f'{sensor}_RADCAL_file']
+                        # gp.attributes['CalibrationDate'] = uncGroup.attributes[f'{sensor}_RADCAL_file']
+
+                    SeaBASSHeader.saveSeaBASSHeader(SeaBASSHeader.filename)
 
         return root
 
@@ -908,9 +932,19 @@ class ProcessL1b:
             classbased_dir = os.path.join(PATH_TO_DATA, 'Class_Based_Characterizations', 'TriOS_initial')
 
         # The radCalDir is now the same for all cal/char regimes and regardless of whether files were downloaded from FidRadDB or not
-        sensor_type = 'TriOS' if ConfigFile.settings['SensorType'].lower() == "trios es only" \
+        sensor_make = 'TriOS' if ConfigFile.settings['SensorType'].lower() == "trios es only" \
             else ConfigFile.settings['SensorType']
-        radcal_dir = os.path.join(CODE_HOME, 'Data', 'FidRadDB', sensor_type)
+        radcal_dir = os.path.join(CODE_HOME, 'Data', 'FidRadDB', sensor_make)
+
+        # Set configuration cal files aside for use with calibrationmap later
+        for sensorType in ['ES','LT','LI']:
+            if sensor_make.lower() == 'seabird':            
+                node.getGroup(f'{sensorType}_LIGHT').attributes['CalFileNameFactory'] = \
+                    node.getGroup(f'{sensorType}_LIGHT').attributes['CalFileName']
+                node.getGroup(f'{sensorType}_LIGHT_L1AQC').attributes['CalFileNameFactory'] = \
+                    node.getGroup(f'{sensorType}_LIGHT').attributes['CalFileName']
+            else:
+                node.getGroup(sensorType).attributes['CalFileNameFactory'] = node.getGroup(sensorType).attributes['CalFileName']
 
         if ConfigFile.settings['fL1bCal'] == 1:
             # classbased_dir = os.path.join(PATH_TO_DATA, 'Class_Based_Characterizations', ConfigFile.settings['SensorType']+"_initial")
@@ -977,9 +1011,9 @@ class ProcessL1b:
         calibrationMap = CalibrationFileReader.read(calPath)
         start, stop = ProcessL1b_FactoryCal.get_cal_file_lines(calibrationMap)
         for gp in node.groups:
-            if gp.id in ['ES','LI','LT'] or '_L1AQC' in gp.id:
-                gp.attributes['CAL_START'] = str(start[gp.attributes['CalFileName']])
-                gp.attributes['CAL_STOP'] = str(stop[gp.attributes['CalFileName']])
+            if gp.id in ['ES','LI','LT'] or 'LIGHT_L1AQC' in gp.id:
+                gp.attributes['CAL_START'] = str(start[gp.attributes['CalFileNameFactory']])
+                gp.attributes['CAL_STOP'] = str(stop[gp.attributes['CalFileNameFactory']])
         if ConfigFile.settings['fL1bCal'] == 1 or ConfigFile.settings['fL1bCal'] == 2:
             # Class-based radiometric processing is identical to factory processing
             # Results may differs due to updated calibration files but the two

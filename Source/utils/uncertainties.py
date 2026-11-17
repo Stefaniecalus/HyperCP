@@ -246,6 +246,7 @@ class unc_management:
                 if s in g.id and s not in sensor_list:
                     sensor_list.append(s)
 
+        grp = node.getGroup("RAW_UNCERTAINTIES")
         for sensor in sensor_list:
             ds = unc_grp.getDataset(sensor + "_RADCAL_CAL")
             if ds is None:

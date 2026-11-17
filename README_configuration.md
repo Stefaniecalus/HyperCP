@@ -205,7 +205,9 @@ software when initialized for a given platform. Not an option without SunTracker
     **Default**: -40 to +40 (arbitrary)
 
 - **Relative Solar Azimuth Filter** (optional): Relative azimuth angle in degrees between the viewing Li/Lt and the sun.
-    **Default**: 90-135 deg (Mobley 1999, Zhang et al. 2017); 135 deg (Mueller 2003 (NASA Protocols)); 90 deg unless certain
+    When using the B26 glint correction (see L2 below), these limits are currently forced to near 90 deg due to current 
+    limitation in the LUTs.
+    **Default**: 87-138 deg (Mobley 1999, Zhang et al. 2017); 135 deg (Mueller 2003 (NASA Protocols)); 90 deg unless certain
     of platform shadow (Zibordi et al. 2009, IOCCG Draft Protocols)
 
 ### Deglitching (optional)
@@ -271,8 +273,8 @@ The table summarizes the options
 | Option                                         | Description                                                                    | Recommended if ...                                                                                                  |
 |------------------------------------------------|--------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
 | **Internal Thermistor**                        | Uses the built-in temperature sensor (available for SeaBird and DALEC)         | ... thermistor is available (still not supported for TriOS G2)                                                      |
-| **T$_{air}$ + 5.0°C**                          | Estimates working temperature by adding 5.0°C to T$_{air}$                     | ... thermistor is unavailable and caps-on darks unavailable                                                         | 
-| **Caps-on Dark File (T$_{air}$ $\geq$ 30 °C)** | Estimate working temperature from dark current measurements taken with caps on | ... thermistor is unavailable and caps-on darks are available (falls back to "T$_{air}$+5.0°C" if T$_{air}$ < 30°C) |
+| **$T_{air}$ + 5.0°C**                          | Estimates working temperature by adding 5.0°C to $T_{air}$                     | ... thermistor is unavailable and caps-on darks unavailable                                                         | 
+| **Caps-on Dark File (T$_{air}$ $\geq$ 30 °C)** | Estimate working temperature from dark current measurements taken with caps on | ... thermistor is unavailable and caps-on darks are available (falls back to "$T_{air}$+5.0°C" if $T_{air}$ < 30°C) |
 
 ---
 
@@ -458,25 +460,15 @@ Each HyperOCR collects data at unique and adaptive integration intervals and req
  sampled data). (Brewin et al. 2016, Vandenberg 2017).
 
 Each HyperOCR radiometer collects data in a unique set of wavebands nominally at 3.3 nm resolution. For merging, they
-must be interpolated to common wavebands. Interpolating to a different (i.e. lower) spectral resolution is also an
-option. No extrapolation is calculated (i.e. interpolation is between the global minimum and maximum spectral range for
-*all* HyperOCRs). Spectral interpolation is by univariate spline with a smoothing factor of 3, but can be manually
-changed to liner (see ProcessL1B_Interp.interpolateWavelength).
-**(API: https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.UnivariateSpline.html)**
-
-In the case of TriOS, each radiometers have its own waveband definition, specify through a polynomial function available
-in the SAM_xxxx.ini file. TriOS resolution is usually really close to 3.3 nm but can slightly vary depending of this
-polynomial. The same interpolation scheme describes above for HyperOCR is used on TriOS data.
-
-*Note: only the datasets specified in ```ProcessL1B.py``` in each group will be interpolated and carried forward. For
-radiometers, this means that ancillary instrument data such as SPEC_TEMP and THERMAL_RESP will be dropped at L1B and
-beyond. See ```ProcessL1b_Interp.py``` at Perform Time Intepolation comment.*
+must be interpolated to common wavebands. Interpolation methods such as cubic spline can introduce spectral anomalies, 
+particularly in fast-changing spectral regions. We therefore apply a hyperspectral convolution to a common set of wavebands
+by assuming a Gaussian spectral response function (SRF) for the Zeiss MMS1 miniature spectrometer commonly used in the field (e.g.,
+SeaBird, TriOS, DALEC) with 10 nm FWHM resolution at the ~3.3 nm spectral sampling bands. Native data are convolved to 
+common wavebands using a 0.5 nm SRF with a 10 nm Gaussian shape assumption.
 
 Optional plots of Es, Li, and Lt of L1B data can be generated which show the temporal interpolation for each parameter
 and each waveband to the slowest sampling radiometer timestamp. They are saved in [output_directory]/Plots/L1B_Interp.
 Plotting is time and memory intensive, and can also add significant time to PDF report production.
-
-*{To Do: Allow provision for above water radiometers that operate simultaneously, sequentially and/or in the same wavebands.}*
 
 ## Level 1BQC Processing
 
@@ -565,11 +557,11 @@ optimal ensemble periods within that hour will depend on how rapidly conditions 
 
 To estimate the water leaving radiance ($L_{w}$) and remote sensing reflectance ($R_{rs}$) from above water radiometry measurements,
 the light entering the downward-looking radiometer ($L_{t}$) attributable to the reflection of skylight (and sunlight for a 
-wind-ruffled surface) at the air-sea interface must be removed from the Lt signal. This is accomplished by measuring skylight
+wind-ruffled surface) at the air-sea interface must be removed from the $L_{t}$ signal. This is accomplished by measuring skylight
 ($L_{i}$) at a recipricol zenith and equivalent relative azimuth angle, and then estimating the fraction of that signal ($\rho$) 
 reflected into $L_{t}$. This glint correction factor ($\rho$) can be estimated using various 
 approaches  **(e.g., Mobley 1999, Mueller et al. 2003 (NASA Protocols), IOCCG Protocols 2019)**. It is primarily dependent 
-on wind speed and solar-senzor geometries, and to a lesser extent on the aerosol type, aerosol optical depth, and water temperature
+on wind speed and solar-sensor geometries, and to a lesser extent on the aerosol type, aerosol optical depth, and water temperature
 and salinity (see L1B configuration).
 
 L2 processing in HyperCP accomodates several approaches to estimating the glint correction factor.
@@ -580,29 +572,46 @@ Mobley 2015, Hieronymi 2016, D'Alimonte and Kajiyama 2016,Foster and Gilerson 20
 tabulated LUT used for the Mobley 1999 glint correction is derived from **Mobley, 1999, Appl Opt 38, page 7445, Eq. 4** and 
 can be found in the /Data directory as text or HDF5 data.
 
-The **Zhang et al. 2017** model (Z17) explicitly accounts for spectral dependence in rho, separates the glint contribution
+The **Zhang et al. 2017** model (Z17) explicitly accounts for spectral dependence in $\rho$, separates the glint contribution
 from the sky and the sun, and accounts for polarization in the skylight term. This approach requires knowledge of
 environmental conditions during sampling including: wind speed, aerosol optical depth, solar and sensor azimuth and
 zenith angles, water temperature and salinity. To accomodate these parameters, HyperCP uses either the ancillary data
 file provided in the main window, GMAO or ECMWF models, or the default values set in L1B configuration. If ancillary data are
 not provided, data will be extracted for the date and location of the in situ data GMAO or ECMWF models, if available. 
-Otherwise, the default values set in the Configuration window at L1B will be used as a last resort. Various LUTs for Z17
-can be found in the /Data directory.
+Otherwise, the default values set in the Configuration window at L1B will be used as a last resort. LUTs for Z17
+can be found in the /Data directory. These are abbreviated from the full database and used in uncertainty calculations for efficiency.
 
-The **3C** approach {TODO; Placeholder}...
-
-The **Bulgarelli et al. 2026** approach {TODO; Placeholder}
+The **Bulgarelli et al. 2026** model (B26) provides spectral glint correction factors for typical inland, coastal and
+open-ocean waters, accounting for spectral and atmospheric dependencies. They are computed for the measurement geometry
+applied in AERONET-OC ($\phi$ = 90°, $\theta$ = 40°, as endorsed by the ocean color community to support satellite data
+validation) and tabulated by wavelength (340-1020 nm), solar zenith angle (10°-80°), wind speed (0-10 m/s) and
+aerosol optical depth at 560 nm (0.05-0.50). Environmental parameters are supplied as for Z17. Users can select the aerosol
+type, which has only a minor effect: maritime (MA, open ocean), continental (CO, inland waters) or mixed (MX, coastal zones;
+default). Unlike M99, which uses only the total sky radiance, B26 offers factors computed from either the total sky radiance
+(rho_tot) or its diffuse component alone (rho_dif). The rho_dif factors are the default, and are the appropriate choice when
+quality-control procedures are applied to filter out measurements affected by sun glint.
 
 Once $\rho$ has been calculated, the remote sensing reflectance is then calculated as
 
 $$
 \displaystyle
-Rrs = \frac{L_{t} - \rho.L_{i}}{E_{s}} = \frac{L_{w}}{E_{s}}.
+Rrs = \frac{L_{t} - \rho L_{i}}{E_{s}} = \frac{L_{w}}{E_{s}}.
 $$
 
-Normalized water leaving radiance (nLw) is calculated as $Rrs.F0$, where F0 is the top of atmosphere incident radiation
+Normalized water leaving radiance ($nL_{w}$) is calculated as $Rrs \cdot F0$, where F0 is the top of atmosphere incident radiation
 adjusted for the Earth-Sun distance on the day sampled. This is now estimated using the Coddington et al. (2021) TSIS-1
 hybrid model, also provided in the /Data directory.
+
+The **3C** model (Groetsch et al. 2017; Pitarch 2026) derives remote sensing reflectance from above-water radiometry with a physics-based model that fits $L_{t}$/$E_{s}$ spectra to a model estimate. Model parameters, including those that are used as a model of the glint, are found by spectral matching. Hence, the glint estimate is spectral by nature, and the modeling is wavelength-agnostic. In practice, the M99 $\rho$ model is used as a first guess, whereas an offset term is modeled as a linear combination of the direct and diffuse component, found with the simplified algebraic atmospheric model by Gregg and Carder (1990). Due to its construction, 3C does not need wind speed as input and hence is not theoretically limited by any value of it. Also, the model has shown good performance in conditions outside the ideal ones for satellite validation (i.e., low wind speeds, favorable sun-view geometries, stable conditions, high sun elevations).
+
+The follow table lists ancillary data requirements for each glint correction model with parameter limitations as implemented in HyperCP, including solar zenith angle (SZA), relative azimuth angle (RAA), viewing nadir angle (VNA), aerosol optical thickness ($\tau$), sea surface temperature (SST), and salinity (Sal).
+
+|Model|Wind [m/s]|SZA   |RAA    |VNA    |$\tau$(550)|SST [C] |Sal [psu]|
+|-----|----------|------|-------|-------|-----------|--------|---------|
+|M99  |0-14      |0-80  |0-180  |0-87.5 |N/A        |N/A     |N/A      |
+|Z17  |0-15      |10-60 |80-140 |30,40  |0-0.5      |-40-40  |0-60     |
+|B26  |0-10      |10-80 |90     |30,40  |0-0.5      |N/A     |N/A      |
+|3C   |N/A       |N/A   |N/A    |N/A    |N/A        |N/A     |N/A      |
 
 ### <a id="uncertainties-anchor"></a>Uncertainties
 Uncertainties in $L_{i}$, $L_{t}$, $E_{s}$ ($u(L_{i})$, $u(L_{t})$, $u(E_{s})$ ) are derived as the quadrature sum of uncertainties associated with standard error (i.e., variability among samples) and instrument uncertainties based on laboratory characterization of a specific instrument or class of instruments. Uncertainty in the skylight reflectance factor, $u(\rho_{sky})$, was historically estimated as +/- 0.003 from Ruddick et al. 2006 Appendix 2 (intended for clear skies), but in HyperCP v1.2+ is estimated using Monte Carlo iterations perturbing the input solar-sensor geometries and environmental conditions over normal distributions around the current measurement in addition to differences between multiple models for $\rho_{sky}$ (i.e., Mobley 1999 and Zhang et al. 2017).

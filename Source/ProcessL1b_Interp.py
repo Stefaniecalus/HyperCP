@@ -11,6 +11,7 @@ import scipy as sp
 
 from Source.HDFRoot import HDFRoot
 from Source.ConfigFile import ConfigFile
+from Source.Weight_RSR import Weight_RSR
 import Source.utils.plotting as plotting
 import Source.utils.comparing as comparing
 import Source.utils.loggingHCP as logging
@@ -542,7 +543,8 @@ class ProcessL1b_Interp:
 
         for i in range(newWavebands.shape[0]):
             # limit to one decimal place
-            newColumns[str(round(10*newWavebands[i])/10)] = []
+            # newColumns[str(round(10*newWavebands[i])/10)] = []
+            newColumns[f'{newWavebands[i]:.3f}'] = []
 
         # Perform interpolation for each timestamp
         for timeIndex in range(len(saveDatetag)):
@@ -556,7 +558,8 @@ class ProcessL1b_Interp:
             new_y = sp.interpolate.InterpolatedUnivariateSpline(x, y, k=3)(newWavebands)
 
             for waveIndex in range(newWavebands.shape[0]):
-                newColumns[str(round(10*newWavebands[waveIndex])/10)].append(new_y[waveIndex])
+                # newColumns[str(round(10*newWavebands[waveIndex])/10)].append(new_y[waveIndex])
+                newColumns[f'{newWavebands[waveIndex]:.3f}'].append(new_y[waveIndex])
 
         newDS.columns = newColumns
         newDS.columnsToDataset()
@@ -569,7 +572,8 @@ class ProcessL1b_Interp:
             of all sensors, the minimum highest wavelength, and the interval
             set in the Configuration Window. '''
 
-        print('Interpolating to common wavelengths')
+        # print('Interpolating to common wavelengths')
+        print('Convolving to common wavelengths')
         root = HDFRoot()
         root.copyAttributes(node)
 
@@ -695,15 +699,32 @@ class ProcessL1b_Interp:
             end = min(esEnd,ltEnd)
             newWavebands = np.arange(start, end, interval)
 
-        print('Interpolating Es')
-        ProcessL1b_Interp.interpolateWavelength(esData, newESData, newWavebands)
-        if 'LI' in radiance_group_ids:
-            print('Interpolating Li')
-            ProcessL1b_Interp.interpolateWavelength(liData, newLIData, newWavebands)
-        if 'LT' in radiance_group_ids:
-            print('Interpolating Lt')
-            ProcessL1b_Interp.interpolateWavelength(ltData, newLTData, newWavebands)
 
+
+        # TODO: Decide on an implementation or allow user selection in ConfigWindow
+        convolution = True
+
+
+
+
+        if convolution:
+            print('Convolving Es')
+            Weight_RSR.gaussian_L1B(esData,newESData,newWavebands)
+            if 'LI' in radiance_group_ids:
+                print('Convolving Li')
+                Weight_RSR.gaussian_L1B(liData,newLIData,newWavebands)
+            if 'LT' in radiance_group_ids:
+                print('Convolving Lt')
+                Weight_RSR.gaussian_L1B(ltData,newLTData,newWavebands)
+        else:
+            print('Interpolating Es')
+            ProcessL1b_Interp.interpolateWavelength(esData, newESData, newWavebands)
+            if 'LI' in radiance_group_ids:
+                print('Interpolating Li')
+                ProcessL1b_Interp.interpolateWavelength(liData, newLIData, newWavebands)
+            if 'LT' in radiance_group_ids:
+                print('Interpolating Lt')
+                ProcessL1b_Interp.interpolateWavelength(ltData, newLTData, newWavebands)
         return root
 
     @staticmethod
@@ -926,6 +947,15 @@ class ProcessL1b_Interp:
             # Calls interpolateWavelengths and matchColumns
             # Includes columnsToDataset for only the radiometry, for remaining groups, see below
             root = ProcessL1b_Interp.matchWavelengths(root)
+        if ConfigFile.settings['SensorType'].lower() == 'trios es only':
+            # Update for .3f waveband format
+            for gp in ['IRRADIANCE','ES_L1AQC']:
+                ds = root.getGroup(gp).datasets['ES']
+                newCols = ds.columns.copy()
+                for k in newCols:
+                    if k not in ['Datetag','Timetag2','Datetime']:
+                        band = float(k)
+                        ds.columns[f'{band:.3f}'] = ds.columns.pop(k)
 
         # FRM uncertainties
         _unc = node.getGroup('RAW_UNCERTAINTIES')

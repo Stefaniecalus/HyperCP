@@ -280,7 +280,7 @@ class ProcessL1bDALEC:
             return None
             # pass
 
-        # Interpolation
+        # Interpolate
         # Match instruments to a common timestamp (slowest shutter, should be Lt) and
         # interpolate to the chosen spectral resolution.
         node = ProcessL1b_Interp.processL1b_Interp(node, outFilePath)
